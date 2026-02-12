@@ -1,16 +1,8 @@
+from http.server import BaseHTTPRequestHandler
+import requests
 import json
-import cloudscraper
-import re
 from bs4 import BeautifulSoup
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from curl_cffi import requests as cf_requests
-
-
-SCRAPER = cloudscraper.create_scraper(
-    browser={"browser": "chrome", "platform": "windows", "mobile": False}
-)
-REQUEST_TIMEOUT_SECONDS = 20
-SEARCH_QUERY_SUFFIX = "chords tabs ultimate guitar"
+from urllib.parse import urlparse, parse_qs
 
 
 def build_chord(chord):
@@ -67,73 +59,30 @@ def build_search_url(song_name, artist_name):
     fixed_song = song_name.replace("&", "%26")
     return f"https://www.ultimate-guitar.com/search.php?title={fixed_name} {fixed_song}&page=1&type=300".replace(" ", "%20")
 
-def build_duckduckgo_url(song_name, artist_name):
-    query = f"{artist_name} {song_name} {SEARCH_QUERY_SUFFIX}"
-    return f"https://duckduckgo.com/html/?q={quote_plus(query)}"
-
-def fetch_html(url):
-    """Use browser impersonation first. Fallback to cloudscraper for compatibility."""
-    try:
-        response = cf_requests.get(
-            url, impersonate="chrome136", timeout=REQUEST_TIMEOUT_SECONDS
-        )
-        return response.text, response.status_code
-    except Exception:
-        response = SCRAPER.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
-        return response.text, response.status_code
-
-def get_tab_page_urls(song_name, artist_name):
-    """Resolve tab URLs via DuckDuckGo results to avoid UG search anti-bot blocks."""
-    search_url = build_duckduckgo_url(song_name, artist_name)
-    html, status_code = fetch_html(search_url)
-    print(search_url, status_code)
-
-    if status_code != 200:
-        return []
-
-    hrefs = re.findall(r'href="([^"]+)"', html)
+def get_tab_page_urls(search_url):
+    """Given search url, gets the url of the correct tab page."""
+    resp = requests.get(search_url)
+    soup = BeautifulSoup(resp.content, "html.parser")
+    soup = soup.find(class_="js-store")
+    
+    print(search_url, resp)
+    
+    page_data = json.loads(soup["data-content"])
+    results = page_data["store"]["page"]["data"]["results"]
     tabs = []
-    for href in hrefs:
-        if "uddg=" in href:
-            parsed = parse_qs(urlparse(href).query)
-            candidate = unquote(parsed.get("uddg", [""])[0])
-        else:
-            candidate = href
-
-        if (
-            candidate.startswith("https://tabs.ultimate-guitar.com/tab/")
-            and "-chords-" in candidate
-            and candidate not in tabs
-        ):
-            tabs.append(candidate)
-
+    for tab in results:
+        if "type" in tab.keys() and tab["type"] == "Chords":
+            tabs.append(tab["tab_url"])
     return tabs
 
 
 def scrape_tab_html(tab_page_url):
     """Given the url of the tab page, returns the HTML of the actual tab."""
-    html, status_code = fetch_html(tab_page_url)
-    if status_code != 200:
-        return ""
-
-    soup = BeautifulSoup(html, "html.parser")
+    resp = requests.get(tab_page_url)
+    soup = BeautifulSoup(resp.content, "html.parser")
     soup = soup.find(class_="js-store")
-
-    if not soup or "data-content" not in soup.attrs:
-        return ""
-
     page_data = json.loads(soup["data-content"])
-    unparsed_html = (
-        page_data.get("store", {})
-        .get("page", {})
-        .get("data", {})
-        .get("tab_view", {})
-        .get("wiki_tab", {})
-        .get("content", "")
-    )
-    if not unparsed_html:
-        return ""
-
+    unparsed_html = page_data["store"]["page"]["data"]["tab_view"]["wiki_tab"]["content"]
     return parse_tab_page(unparsed_html)
 
 
@@ -145,14 +94,12 @@ def get_tabs(song_name, artist_name):
     Returns:
             string: The HTML of the tab.
     """
-    tab_page_urls = get_tab_page_urls(song_name, artist_name)[:6] # limit to 6 songs
+    search_url = build_search_url(song_name, artist_name)
+    tab_page_urls = get_tab_page_urls(search_url)[:6] # limit to 6 songs
     results = []
     for url in tab_page_urls:
-        parsed_tab = scrape_tab_html(url)
-        if not parsed_tab:
-            continue
         results.append({
-            "chords": parsed_tab,
+            "chords": scrape_tab_html(url),
             "url": url
         })
 
@@ -161,10 +108,7 @@ def get_tabs(song_name, artist_name):
 
 def main(event, context):
     print(event)
-    arguments = parse_qs(event.get("rawQueryString", ""))
-
-    if "artist_name" not in arguments or "song_name" not in arguments:
-        return []
+    arguments = parse_qs(event["rawQueryString"])
 
     artist_name = arguments["artist_name"][0]
     song_name = arguments["song_name"][0]
