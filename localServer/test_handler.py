@@ -70,6 +70,19 @@ class LocalServerHandlerTests(TestCase):
 
         ddg.assert_called_once_with("Creep", "Radiohead")
 
+    def test_get_tab_page_urls_for_song_tries_ug_then_ddg(self):
+        with patch.object(handler, "get_tab_page_urls", return_value=[]), patch.object(
+            handler,
+            "get_tab_page_urls_ddg",
+            return_value=["https://tabs.ultimate-guitar.com/tab/radiohead/creep-chords-4169"],
+        ) as ddg:
+            self.assertEqual(
+                handler.get_tab_page_urls_for_song("Creep", "Radiohead"),
+                ["https://tabs.ultimate-guitar.com/tab/radiohead/creep-chords-4169"],
+            )
+
+        ddg.assert_called_once_with("Creep", "Radiohead")
+
     def test_fetch_html_uses_cached_response(self):
         url = "https://example.com/cached"
         handler.cache_response(url, 200, "<html>cached</html>")
@@ -106,3 +119,21 @@ class LocalServerHandlerTests(TestCase):
             self.assertEqual(handler.fetch_html(url), ("blocked", 403))
 
         self.assertIsNone(handler.get_cached_response(url))
+
+    def test_is_in_ultimate_guitar_caches_by_song_and_artist(self):
+        with patch.object(
+            handler,
+            "get_tab_page_urls_for_song",
+            return_value=["https://tabs.ultimate-guitar.com/tab/radiohead/creep-chords-4169"],
+        ) as search:
+            self.assertTrue(handler.is_in_ultimate_guitar("Creep", "Radiohead"))
+            self.assertTrue(handler.is_in_ultimate_guitar(" creep ", " radiohead "))
+
+        search.assert_called_once_with("Creep", "Radiohead")
+
+    def test_is_in_ultimate_guitar_caches_false_result(self):
+        with patch.object(handler, "get_tab_page_urls_for_song", return_value=[]) as search:
+            self.assertFalse(handler.is_in_ultimate_guitar("Missing", "Artist"))
+            self.assertFalse(handler.is_in_ultimate_guitar("Missing", "Artist"))
+
+        search.assert_called_once_with("Missing", "Artist")

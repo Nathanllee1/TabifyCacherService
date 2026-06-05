@@ -111,6 +111,16 @@ def get_db():
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS song_ug_cache (
+            song_key TEXT PRIMARY KEY,
+            artist_name TEXT NOT NULL,
+            song_name TEXT NOT NULL,
+            in_ug INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     return conn
 
 
@@ -139,6 +149,40 @@ def cache_response(url, status_code, body):
                 updated_at = CURRENT_TIMESTAMP
             """,
             (url, url, status_code, body),
+        )
+
+
+def normalize_song_key(song_name, artist_name):
+    return f"{artist_name.strip().casefold()}::{song_name.strip().casefold()}"
+
+
+def get_cached_song_ug(song_name, artist_name):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT in_ug FROM song_ug_cache WHERE song_key = ?",
+            (normalize_song_key(song_name, artist_name),),
+        ).fetchone()
+    return bool(row["in_ug"]) if row else None
+
+
+def cache_song_ug(song_name, artist_name, in_ug):
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO song_ug_cache (song_key, artist_name, song_name, in_ug)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(song_key) DO UPDATE SET
+                artist_name = excluded.artist_name,
+                song_name = excluded.song_name,
+                in_ug = excluded.in_ug,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                normalize_song_key(song_name, artist_name),
+                artist_name,
+                song_name,
+                int(in_ug),
+            ),
         )
 
 
@@ -205,6 +249,13 @@ def get_tab_page_urls_ddg(song_name, artist_name):
     return tabs
 
 
+def get_tab_page_urls_for_song(song_name, artist_name):
+    tab_page_urls = get_tab_page_urls(build_search_url(song_name, artist_name))
+    if not tab_page_urls:
+        tab_page_urls = get_tab_page_urls_ddg(song_name, artist_name)
+    return tab_page_urls
+
+
 def scrape_tab_html(tab_page_url):
     """Given the url of the tab page, returns the HTML of the actual tab."""
     html, status_code = fetch_html(tab_page_url)
@@ -240,11 +291,7 @@ def get_tabs(song_name, artist_name):
     Returns:
             string: The HTML of the tab.
     """
-    tab_page_urls = get_tab_page_urls(build_search_url(song_name, artist_name))
-    if not tab_page_urls:
-        tab_page_urls = get_tab_page_urls_ddg(song_name, artist_name)
-
-    tab_page_urls = tab_page_urls[:6] # limit to 6 songs
+    tab_page_urls = get_tab_page_urls_for_song(song_name, artist_name)[:6] # limit to 6 songs
     results = []
     for url in tab_page_urls:
         parsed_tab = scrape_tab_html(url)
@@ -256,6 +303,16 @@ def get_tabs(song_name, artist_name):
         })
 
     return results
+
+
+def is_in_ultimate_guitar(song_name, artist_name):
+    cached = get_cached_song_ug(song_name, artist_name)
+    if cached is not None:
+        return cached
+
+    in_ug = bool(get_tab_page_urls_for_song(song_name, artist_name))
+    cache_song_ug(song_name, artist_name, in_ug)
+    return in_ug
 
 
 def main(event, context):
