@@ -16,3 +16,7 @@ node_modules
 .venv*
 .vscode
 __pycache__
+
+# local cache data
+localServer/*.sqlite3
+localServer/*.sqlite3-*
